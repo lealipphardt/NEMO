@@ -1,6 +1,12 @@
+# NEMO - Phenology Analysis Workflow
+# Streamlined R script for phenology data analysis
+
 ################################################################################
-# NEMO - Phenology Analysis
+# 1. Setup
 ################################################################################
+# To ensure compatibility when connecting to databases such as Microsoft Access,
+# ensure the architecture (32-bit or 64-bit) of the following components match:
+# R version, ODBC Driver and Microsoft Office
 
 # Install/load packages
 # Package Management: automatically installs and loads the packages if they are not already available
@@ -8,7 +14,7 @@ if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
 pacman::p_load(odbc, DBI, tidyverse, lubridate, dplyr)
 
 ################################################################################
-# 1. Import Data from Access
+# 2. Import Data from Access
 ################################################################################
 
 # Define the function to connect to Access
@@ -43,7 +49,7 @@ str(df_selected)
 dbDisconnect(con)
 
 ################################################################################
-# 2. Data Transformation and Preparation
+# 3. Data Transformation and Preparation
 ################################################################################
 
 # Convert VisitDate column to Date format (ensures consistent handling of date values)
@@ -74,7 +80,7 @@ df_selected$BreedingSeason <- ifelse(
 )
 
 ################################################################################
-# 3. Flagging Clutch Entries
+# 4. Flagging Clutch Entries
 ################################################################################
 
 append_note_to_clutch_values <- function(df) {
@@ -149,7 +155,7 @@ df_selected_BreedingSeason <- df_selected_BreedingSeason %>%
   )
 
 ################################################################################
-# 4. Phenology Calculations
+# 5. Phenology Estimates
 ################################################################################
 
 # Find first visit with egg
@@ -278,7 +284,7 @@ phenology <- df_selected_BreedingSeason %>%
   find_last_visit()
 
 ################################################################################
-# 5. Hatching Date, Accuracy, and Success
+# 6. Hatching Date, Accuracy, and Success
 ################################################################################
 
 phenology <- phenology %>%
@@ -322,7 +328,7 @@ phenology <- phenology %>%
   )
 
 ################################################################################
-# 6. Chick Presence and Breeding Success
+# 7. Chick Presence and Breeding Success
 ################################################################################
 
 # Get the number of days a chick/chicks are present in the Nest 
@@ -367,7 +373,7 @@ phenology <- phenology %>%
   )
 
 ################################################################################
-# 7. Final Phenology Dataset
+# 8. Final Phenology Dataset
 ################################################################################
 
 # Select the columns of interest
