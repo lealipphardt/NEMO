@@ -1,0 +1,533 @@
+---
+title: "An automated procedure for phenology data analyses"
+author: "Lea Rosa Maria Lipphardt"
+date: "2024-11-19"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+
+```
+
+## Introduction
+ 
+This automated procedure streamlines analysis of phenology data,
+enabling more efficient estimation of key metrics such as hatching
+dates, breeding success, and chick survival. The data is sourced from
+the ACCESS database, NEMO, and processed through a series of R scripts.
+
+The workflow is structured as follows:
+
+1.  Setup
+    1.1 Confirm system architecture (32-bit or 64-bit)
+    1.2 Install and load the required packages
+2.  Import Data from Access
+    2.1 Connect to the Access database using ODBC
+    2.2 Retrieve data via SQL queries
+    2.3 Control section
+3.  Data Transformation and Preperation
+    3.1 Format dates and optionally subset data
+    3.2 For Svarthamaren assign a specific breeding period
+4.  Flag and Document Exceptions
+    4.1 Identify and document data anomalies
+5.  Phenology Estimates    
+6.  Estimate Hatching Dates
+    5.1 Calculate hatching dates and assess accuracy
+7.  Chick Presence and Breeding Success
+8.  Summarize Findings
+
+This document is written in R Markdown, a versatile format for creating
+HTML, PDF, and Word documents. For more details on R Markdown, visit
+<http://rmarkdown.rstudio.com>.
+
+To execute the R code, click the green arrow in the Script Editor
+(Source pane). Press the Knit button to generate a final document that
+integrates both narrative content and the output from your R code
+chunks.
+
+## 1. Setup
+
+To ensure compatibility when connecting to databases such as Microsoft
+Access, ensure the architecture (32-bit or 64-bit) of the following
+components match:
+
+-   **R Version**
+
+    Check your R bit version by running:
+
+```{r}
+R.version$arch
+```
+
+    The output will indicate either x86_64 (64-bit) or i386 (32-bit).
+
+-   **ODBC Driver**
+
+    -   nstall the ODBC driver matching your R version:
+
+        -   For 32-bit R: Install the 32-bit ODBC driver.
+
+        -   For 64-bit R: Install the 64-bit ODBC driver.
+
+    -   Download drivers from the [Microsoft ODBC Driver
+        website](https://learn.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+
+-   **Microsoft Office**
+
+    -   Check your Microsoft Office version:
+
+        -   Open any Office app (e.g., Word), go to **File** \>
+            **Account** \> **About**, and look for "32-bit" or "64-bit."
+
+    -   If your Office version doesn't match your R version, consider
+        installing the Access Database Engine for the appropriate bit
+        version: [Download Access Database
+        Engine](https://www.microsoft.com/en-us/download/details.aspx?id=54920).
+
+
+
+
+Install and load the required packages
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+
+# Package Management automatically installs and loads the packages if they are not already available
+if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+pacman::p_load(odbc, DBI, tidyverse, lubridate, dplyr)
+
+```
+
+## 2. Import Data
+### 2.1 Connect to the Access database using ODBC
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+# Define the function to connect to Access
+connect_to_access <- function(db_path) {
+  dbConnect(odbc::odbc(), 
+            .connection_string = paste0("Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=", db_path))
+}
+
+# Define the database path
+db_path <- "C:/Users/lea.lipphardt/Documents/NEMOx/Spitsbergen_2024.mdb"
+
+# Connect to the Access database
+con <- connect_to_access(db_path)
+
+```
+
+### 2.2 Define the SQL query
+
+2.1 Create dataframe using Structured query language (SQL)
+
+**SELECT** lets you choose the specific columns (from the different
+tables) that you want to use.
+
+**AS** allows you to assign a temporary name (alias) to tables and
+columns. In the R script, aliases are used for the tables to make the
+SQL query more readable.
+
+**ON** specifies the condition for the join (eg. v.NestStatus =
+nc.NestContentID) which tables store the same information under which
+columns.
+
+**INNER JOIN** lets you merge tables, ensuring that only records that
+have matching values in both tables are included.
+
+You can alter the code if you for instance want to include more columns
+with adding the Table.Column to SELECT or further tables using INNE JOIN
+(Table.Column ON Table.Column).
+
+```{r}
+# Define the SQL query
+query <- "
+SELECT s.spcENG, n.Locality, n.Area, n.NestNumber, v.VisitDate, nc.NestContentText, v.NestClutch
+FROM (((Visits AS v
+INNER JOIN NestContent AS nc ON v.NestStatus = nc.NestContentID)
+INNER JOIN Nest AS n ON n.NestUniqueID = v.NestUniqueID)
+INNER JOIN Species AS s ON n.Species = s.EUnr)
+"
+
+# Execute the query and fetch results into a dataframe
+df_selected <- dbGetQuery(con, query)
+
+# Inspect the fetched data
+head(df_selected)
+str(df_selected)
+
+# Disconnect from the database
+dbDisconnect(con)
+
+```
+
+### 2.3 Control section
+No need to run this section
+```{r}
+nrow(df_selected)
+
+# Count the number of occurrences of each unique character in NestClutch
+table(df_selected$NestClutch)
+
+# Convert df_selected into a tibble and summarize with dplyr
+df_selected %>%
+  as_tibble() %>%
+  count(NestClutch)
+```
+## 3. Data Transformation and Preperation
+### 3.1 Convert dates into the right format and optional subset of data
+
+```{r}
+# Convert VisitDate column to Date format (ensures consistent handling of date values)
+df_selected$VisitDate <- as.Date(df_selected$VisitDate)
+
+#Extract the breeding season year:
+  # For Svalbard: BreedingSeason is represented as YYYY (e.g., 2024)
+  # For Svarthamaren: BreedingSeason will later be adjusted to YYYY/YYYY 
+df_selected$BreedingSeason <- as.numeric(format(df_selected$VisitDate, "%Y"))
+
+# Subset the data for a specific BreedingSeason, specie, location
+df_selected_BreedingSeason <- subset(df_selected, BreedingSeason == "2024")
+#df_selected_specie <- subset(df_selected_BreedingSeason, spcENG == "Black-legged kittiwake")
+#df_selected_location <- subset(df_selected_specie, Locality == "Ossian Sarsfjellet")
+
+```
+
+### 3.2 For Svarthamaren run the bellow to assign a specific breeding period
+
+Define the breeding season start and end dates relative to each BreedingSeason for Svarthamaren.
+The BreedingSeason will be YYYY for NestNumbers from Svalbard and YYYY/YYYY for Svarthamaren
+
+```{r}
+# For Svarthamaren run the bellow to assign a specific breeding period
+# Define the breeding season start and end dates relative to each BreedingSeason
+df_selected$BreedingSeason <- ifelse(
+  format(df_selected$VisitDate, "%m-%d") >= "11-01", 
+  # If the VisitDate is in November or December, use current BreedingSeason/current BreedingSeason + 1
+  paste0(df_selected$BreedingSeason, "/", df_selected$BreedingSeason + 1),
+  ifelse(
+    format(df_selected$VisitDate, "%m-%d") <= "02-29", 
+    # If the VisitDate is in January or February, use previous BreedingSeason/current BreedingSeason
+    paste0(df_selected$BreedingSeason - 1, "/", df_selected$BreedingSeason),
+    NA # Otherwise, not in the breeding season
+  )
+)
+```
+
+## 4 Flag and Document Exceptions
+### 4.1 Only E/C/empty NestClutch values
+NestClutch values that only include egg/chick/empty entries for a NestNumber for a BreedingSeason will get a Note appended as defined bellow
+```{r}
+
+append_note_to_clutch_values <- function(df) {
+  # Define regex patterns for different categories
+  clutch_values_e <- "^([1-9][Ee]|[1-9][Ee],[1-9][Ee])$"
+  clutch_values_c <- "^([1-9][Cc]|[1-9][Cc],[1-9][Cc])$"
+  
+  # Define valid clutch values for empty entries
+  empty_clutch_values <- c("")
+  
+  # Initialize the Note column with empty strings
+  df$Note <- ""
+  
+  # Iterate over unique NestNumbers and BreedingSeasons
+  for (nest in unique(df$NestNumber)) {
+    for (BreedingSeason in unique(df$BreedingSeason)) {
+      # Subset the data for the current NestNumber and BreedingSeason
+      subset_df <- df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, ]
+      
+      # Remove rows with NA values in NestClutch
+      subset_df <- subset_df[!is.na(subset_df$NestClutch), ]
+      
+      # Check conditions using regex and append notes
+      if (all(grepl(clutch_values_e, subset_df$NestClutch))) {
+        df$Note[df$NestNumber == nest & df$BreedingSeason == BreedingSeason] <- "Only E-entries"
+      } else if (all(grepl(clutch_values_c, subset_df$NestClutch))) {
+        df$Note[df$NestNumber == nest & df$BreedingSeason == BreedingSeason] <- "Only C-entries"
+      } else if (all(subset_df$NestClutch %in% empty_clutch_values)) {
+        df$Note[df$NestNumber == nest & df$BreedingSeason == BreedingSeason] <- "Only empty-entries"
+      }
+    }
+  }
+  
+  return(df)
+}
+```
+
+### 4.2 False NestClutch entries
+Apply the function to the data for appending a Note where you expect a false entry 
+for the NestClutch value
+```{r}
+df_selected_BreedingSeason <- append_note_to_clutch_values(df_selected_BreedingSeason)
+
+# Append note to exceptions
+# This flags exceptions in the data based on specific conditions:
+#   "False_E": Occurs when a clutch value of 'E' is recorded after a 'C' entry.
+#   "False_C": Occurs when a clutch value of 'C' is recorded and followed by two consecutive 'E' entries.
+
+# Define regex patterns for clutch values
+clutch_value_e <- "^([1-9][Ee]|[1-9][Ee],[1-9][Ee])$"  # Possible combinations for egg entries
+clutch_value_c <- "^([1-9][Cc]|[1-9][Cc],[1-9][Cc])$"  # Possible combinations for chick entries
+
+# Apply the logic to flag False_E for '1E' entries following a '1C' entry
+df_selected_BreedingSeason <- df_selected_BreedingSeason %>%
+  group_by(BreedingSeason, NestNumber) %>%
+  arrange(VisitDate, .by_group = TRUE) %>%
+  mutate(
+    Note = case_when(
+      grepl(clutch_value_e, NestClutch) & lag(grepl(clutch_value_c, NestClutch), default = FALSE) ~ "False_E",
+      TRUE ~ Note # Retain existing notes for other cases
+    )
+  )
+
+
+# Apply the logic to flag False_C for '1C' entries followed by two '1E' entries
+df_selected_BreedingSeason <- df_selected_BreedingSeason %>%
+  group_by(BreedingSeason, NestNumber) %>%
+  arrange(VisitDate, .by_group = TRUE) %>%
+  mutate(
+    Note = case_when(
+      grepl(clutch_value_c, NestClutch) & 
+        lead(grepl(clutch_value_e, NestClutch), n = 1, default = FALSE) &
+        lead(grepl(clutch_value_e, NestClutch), n = 2, default = FALSE) ~ "False_C",
+      TRUE ~ Note # Retain existing notes for other cases
+    )
+  )
+```
+
+## 5. Phenology Estimates
+```{r}
+
+# Find first visit with egg
+find_first_E <- function(df) {
+  clutch_values_e <- "^([1-9][Ee]|[1-9][Ee],[1-9][Ee])$"
+  
+  df$First_E <- as.Date(NA)
+  
+  for (nest in unique(df$NestNumber)) {
+    for (BreedingSeason in unique(df$BreedingSeason)) {
+      subset_df <- df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, ]
+      subset_df$VisitDate <- as.Date(subset_df$VisitDate)
+      
+      matching_clutches <- subset_df[grepl(clutch_values_e, subset_df$NestClutch), ]
+      
+      if (nrow(matching_clutches) > 0) {
+        first_entry <- matching_clutches[which.min(matching_clutches$VisitDate), ]
+        df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, "First_E"] <- first_entry$VisitDate
+      }
+    }
+  }
+  
+  return(df)
+}
+
+# Find last visit with egg
+find_last_E <- function(df) {
+  clutch_values_e <- "^([1-9][Ee]|[1-9][Ee],[1-9][Ee])$"
+  
+  df$Last_E <- as.Date(NA)
+  
+  for (nest in unique(df$NestNumber)) {
+    for (BreedingSeason in unique(df$BreedingSeason)) {
+      subset_df <- df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, ]
+      subset_df$VisitDate <- as.Date(subset_df$VisitDate)
+      
+      matching_clutches <- subset_df[grepl(clutch_values_e, subset_df$NestClutch), ]
+      
+      if (nrow(matching_clutches) > 0) {
+        last_entry <- matching_clutches[which.max(matching_clutches$VisitDate), ]
+        df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, "Last_E"] <- last_entry$VisitDate
+      }
+    }
+  }
+  
+  return(df)
+}
+
+# Find first visit with chick
+find_first_C <- function(df) {
+  clutch_values_combined <- "^([1-9][EeCc]|[1-9][EeCc],[1-9][EeCc])$"
+  
+  df$First_C <- as.Date(NA)
+  
+  for (nest in unique(df$NestNumber)) {
+    for (BreedingSeason in unique(df$BreedingSeason)) {
+      subset_df <- df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, ]
+      subset_df$VisitDate <- as.Date(subset_df$VisitDate)
+      
+      matching_clutches <- subset_df[grepl(clutch_values_combined, subset_df$NestClutch), ]
+      
+      if (nrow(matching_clutches) > 0) {
+        first_entry <- matching_clutches[which.min(matching_clutches$VisitDate), ]
+        df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, "First_C"] <- first_entry$VisitDate
+      }
+    }
+  }
+  
+  return(df)
+}
+
+# Find last visit with chick
+find_last_C <- function(df) {
+  clutch_values_combined <- "^([1-9][EeCc]|[1-9][EeCc],[1-9][EeCc])$"
+  
+  df$Last_C <- as.Date(NA)
+  
+  for (nest in unique(df$NestNumber)) {
+    for (BreedingSeason in unique(df$BreedingSeason)) {
+      subset_df <- df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, ]
+      subset_df$VisitDate <- as.Date(subset_df$VisitDate)
+      
+      matching_clutches <- subset_df[grepl(clutch_values_combined, subset_df$NestClutch), ]
+      
+      if (nrow(matching_clutches) > 0) {
+        last_entry <- matching_clutches[which.max(matching_clutches$VisitDate), ]
+        df[df$NestNumber == nest & df$BreedingSeason == BreedingSeason, "Last_C"] <- last_entry$VisitDate
+      }
+    }
+  }
+  
+  return(df)
+}
+
+find_last_visit <- function(df) {
+  # Create new columns initialized with NA
+  df$LastOfVisitDate <- as.Date(NA)
+  df$LastStatus_All <- NA
+  
+  # Iterate over unique NestNumbers and Years
+  for (nest in unique(df$NestNumber)) {
+    for (breedingseason in unique(df$BreedingSeason)) {
+      # Subset the data for the current NestNumber and Year
+      subset_df <- df[df$NestNumber == nest & df$BreedingSeason == breedingseason, ]
+      
+      # Find the last visit based on VisitDate
+      if (nrow(subset_df) > 0) {
+        last_entry <- subset_df[which.max(subset_df$VisitDate), ]
+        
+        # Assign the Last_Visit and LastStatus_All values to all rows for this NestNumber and Year
+        df[df$NestNumber == nest & df$BreedingSeason == breedingseason, "LastOfVisitDate"] <- last_entry$VisitDate
+        df[df$NestNumber == nest & df$BreedingSeason == breedingseason, "LastStatus_All"] <- last_entry$NestContentText
+      }
+    }
+  }
+  
+  return(df)
+}
+
+
+phenology <- df_selected_BreedingSeason %>%
+  find_first_E() %>%
+  find_last_E() %>%
+  find_first_C() %>%
+  find_last_C() %>%
+  find_last_visit()
+```
+
+## 6. Hatching Date Estimates 
+The hatching dates were estimated based on the last egg visit entry and
+the first chick visit entry, a mean of the two registered dates.
+A new column for hatching date, hatching date accuracy, and hatching success is initialised. 
+```{r}
+phenology <- phenology %>%
+  mutate(
+    # Calculate Hatching_date as the mean of Last_E and First_C
+    Hatching_date = if_else(
+      !is.na(Last_E) & !is.na(First_C),
+      as.Date((as.numeric(Last_E) + as.numeric(First_C)) / 2, origin = "1970-01-01"),
+      NA_Date_
+    ),
+    
+    # Calculate Hatching_date_accuracy as half the difference in days
+    Hatching_date_accuracy = if_else(
+      !is.na(Last_E) & !is.na(First_C),
+      (as.numeric(First_C - Last_E) / 2),
+      NA_real_
+    ),
+    
+    # Set June 1st of the given BreedingSeason as Julian Date 1
+    JulianHatchingDate = if_else(
+      !is.na(Hatching_date),
+      {
+        # Extract the year from the Hatching_date
+        year <- as.integer(format(Hatching_date, "%Y"))
+        
+        # Create June 1st date of the same year
+        BreedingSeason_start <- as.Date(paste(year, "-06-01", sep = ""), format = "%Y-%m-%d")
+        
+        # Calculate Julian Date
+        as.numeric(Hatching_date - BreedingSeason_start + 1)
+      },
+      NA_real_
+    ),
+    
+    # Assign HatchingSuccess as 1 if Hatching_date is not NA, otherwise NA
+    HatchingSuccess = if_else(
+      !is.na(Hatching_date),
+      1,
+      NA_real_
+    )
+  )
+```
+
+## 7. Chick Presence and Breedingsuccess
+```{r}
+
+# Get the number of days a chick/chicks are present in the Nest 
+NbChickPresence <- function(df) {
+  # Ensure First_C, Last_C, Hatching_date, and LastOfVisitDate are Date objects
+  df <- df %>%
+    rowwise() %>%
+    mutate(
+      First_C = as.Date(First_C),
+      Last_C = as.Date(Last_C),
+      Hatching_date = as.Date(Hatching_date),
+      LastOfVisitDate = as.Date(LastOfVisitDate)
+    )
+  
+  # Group by NestNumber and BreedingSeason and calculate required metrics
+  df <- df %>%
+    group_by(NestNumber, BreedingSeason) %>%
+    mutate(
+      NbChickPresence = ifelse(!is.na(First_C) & !is.na(Last_C), as.numeric(Last_C - First_C + 1), NA),
+      NbDays_ChickPresence_FromHD = ifelse(!is.na(Hatching_date) & !is.na(Last_C), as.numeric(Last_C - Hatching_date + 1), NA),
+      Diff_LastVisitWithChick_LastVisit = ifelse(!is.na(Last_C) & !is.na(LastOfVisitDate), as.numeric(LastOfVisitDate - Last_C + 1), NA)
+    ) %>%
+    ungroup() # Ungroup to finalize the operation
+  
+  return(df)
+}
+
+# Apply the function
+phenology <- NbChickPresence(phenology)
+
+
+phenology <- phenology %>%
+  rowwise() %>%
+  mutate(
+    Note = if_else(Hatching_date_accuracy > 5, "Hatching_date_accuracy > 5", Note),
+    Note = if_else(NbDays_ChickPresence_FromHD < 15, "Entries for NbDays_ChickPresence_FromHD < 15", Note),
+    ChickSurvival = if_else(Hatching_date_accuracy < 5 & any(NbDays_ChickPresence_FromHD > 15), 1, 0),
+    BreedingSuccess = if_else(
+      spcENG == "Glaucous gull" & ChickSurvival == 1, 1,  # Exception for Glaucous gull
+      if_else(HatchingSuccess == 1 & ChickSurvival == 1, 1, 0)  # Regular condition
+    )
+  )
+
+```
+
+## 8. Final Phenology Dataset
+```{r}
+# Select the columns of interest
+phenology <- phenology %>%
+  select(spcENG, Locality, Area, NestNumber, BreedingSeason, Note, Last_E, First_C, Last_C, NbChickPresence, LastOfVisitDate, LastStatus_All, Hatching_date, JulianHatchingDate, Hatching_date_accuracy, NbDays_ChickPresence_FromHD, Diff_LastVisitWithChick_LastVisit, HatchingSuccess, ChickSurvival, BreedingSuccess)
+
+view(phenology)
+
+```
